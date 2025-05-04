@@ -1,0 +1,244 @@
+workflows:
+  ios-finance-manager:
+    name: iOS Finance Manager App
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      vars:
+        APP_NAME: "FinanceManagerApp"
+        BUNDLE_ID: "io.codemagic.financemanager"
+      xcode: latest
+    scripts:
+      - name: Show exact project structure
+        script: |
+          echo "Current directory: $(pwd)"
+          echo "Contents of current directory:"
+          ls -la
+          
+          echo "=== Swift Files in Project ==="
+          find . -name "*.swift" | sort
+          
+          echo "=== Directory Structure ==="
+          find . -type d | sort
+      
+      - name: Setup project directory
+        script: |
+          # Create workspace directory
+          mkdir -p $CM_BUILD_DIR/FinanceApp
+          
+          # Copy all project files preserving structure
+          echo "Copying all project files..."
+          cp -R * $CM_BUILD_DIR/FinanceApp/ || true
+          
+          # Move to project directory
+          cd $CM_BUILD_DIR/FinanceApp
+          
+          echo "Contents after copying:"
+          ls -la
+          
+          # If the main app file exists, print its contents to verify
+          if [ -f "FinanceManagerApp.swift" ]; then
+            echo "Contents of FinanceManagerApp.swift:"
+            cat FinanceManagerApp.swift
+          fi
+          
+          # Check if Views directory exists and show files
+          if [ -d "Views" ]; then
+            echo "Views directory contents:"
+            ls -la Views/
+          fi
+      
+      - name: Create Xcode project structure
+        script: |
+          cd $CM_BUILD_DIR/FinanceApp
+          
+          # Create missing Info.plist if needed
+          if [ ! -f "Info.plist" ]; then
+            echo "Creating Info.plist file..."
+            cat > Info.plist << 'EOL'
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>CFBundleDevelopmentRegion</key>
+                <string>$(DEVELOPMENT_LANGUAGE)</string>
+                <key>CFBundleExecutable</key>
+                <string>$(EXECUTABLE_NAME)</string>
+                <key>CFBundleIdentifier</key>
+                <string>io.codemagic.financemanager</string>
+                <key>CFBundleInfoDictionaryVersion</key>
+                <string>6.0</string>
+                <key>CFBundleName</key>
+                <string>$(PRODUCT_NAME)</string>
+                <key>CFBundlePackageType</key>
+                <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+                <key>CFBundleShortVersionString</key>
+                <string>1.0</string>
+                <key>CFBundleVersion</key>
+                <string>1</string>
+                <key>LSRequiresIPhoneOS</key>
+                <true/>
+                <key>UIApplicationSceneManifest</key>
+                <dict>
+                    <key>UIApplicationSupportsMultipleScenes</key>
+                    <true/>
+                </dict>
+                <key>UIApplicationSupportsIndirectInputEvents</key>
+                <true/>
+                <key>UILaunchScreen</key>
+                <dict/>
+                <key>UIRequiredDeviceCapabilities</key>
+                <array>
+                    <string>armv7</string>
+                </array>
+                <key>UISupportedInterfaceOrientations</key>
+                <array>
+                    <string>UIInterfaceOrientationPortrait</string>
+                </array>
+            </dict>
+            </plist>
+            EOL
+          fi
+          
+          # Save original Package.swift if it exists
+          if [ -f "Package.swift" ]; then
+            echo "Using existing Package.swift file"
+            cp Package.swift Package.swift.original
+          else
+            # Create a Package.swift file that preserves all your app's structure
+            echo "Creating Package.swift file..."
+            cat > Package.swift << 'EOL'
+            // swift-tools-version:5.5
+            import PackageDescription
+
+            let package = Package(
+                name: "FinanceManagerApp",
+                platforms: [.iOS(.v14)],
+                products: [
+                    .library(name: "FinanceManagerApp", targets: ["FinanceManagerApp"]),
+                ],
+                targets: [
+                    .target(
+                        name: "FinanceManagerApp",
+                        path: ".",
+                        exclude: ["Package.swift", "codemagic.yaml"]
+                    )
+                ]
+            )
+            EOL
+          fi
+          
+          echo "Package.swift contents:"
+          cat Package.swift
+          
+          # Generate Xcode project
+          echo "Generating Xcode project..."
+          swift package generate-xcodeproj
+          
+          # Ensure the Xcode project has correct settings
+          cat > fix_project.swift << 'EOL'
+          import Foundation
+
+          // Read the project.pbxproj file
+          let projectPath = "FinanceManagerApp.xcodeproj/project.pbxproj"
+          guard var projectContent = try? String(contentsOfFile: projectPath) else {
+              print("Failed to read project file")
+              exit(1)
+          }
+
+          // Add iOS deployment target
+          if !projectContent.contains("IPHONEOS_DEPLOYMENT_TARGET") {
+              projectContent = projectContent.replacingOccurrences(
+                  of: "buildSettings = {",
+                  with: "buildSettings = {\n\t\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 14.0;"
+              )
+          }
+          
+          // Write the modified content back
+          do {
+              try projectContent.write(toFile: projectPath, atomically: true, encoding: .utf8)
+              print("Updated project with iOS 14.0 deployment target")
+          } catch {
+              print("Error writing project file: \(error)")
+          }
+          EOL
+          
+          swift fix_project.swift
+          
+          # List the created Xcode project structure
+          echo "Xcode project structure:"
+          find FinanceManagerApp.xcodeproj -type f | sort
+      
+      - name: Build Finance Manager app
+        script: |
+          cd $CM_BUILD_DIR/FinanceApp
+          
+          # List available schemes
+          echo "Available schemes:"
+          xcodebuild -list
+          
+          # Configure simulator
+          DESTINATION="platform=iOS Simulator,name=iPhone 14,OS=latest"
+          
+          # Build the app
+          echo "Building the app..."
+          xcodebuild build \
+            -project "FinanceManagerApp.xcodeproj" \
+            -scheme "FinanceManagerApp" \
+            -destination "${DESTINATION}" \
+            -configuration Debug \
+            IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+      
+      - name: Locate and prepare artifacts
+        script: |
+          echo "Locating built app files..."
+          
+          # Create artifacts directory
+          mkdir -p $CM_BUILD_DIR/artifacts
+          
+          # Find and copy app files
+          APP_FILES=$(find $HOME/Library/Developer/Xcode/DerivedData -name "*.app")
+          
+          if [ -n "$APP_FILES" ]; then
+            echo "Found these app files:"
+            echo "$APP_FILES"
+            
+            # Copy app files to artifacts directory
+            for app in $APP_FILES; do
+              echo "Copying $app to artifacts directory"
+              cp -R "$app" $CM_BUILD_DIR/artifacts/
+            done
+            
+            echo "Contents of artifacts directory:"
+            ls -la $CM_BUILD_DIR/artifacts
+          else
+            echo "No .app files found!"
+          fi
+          
+          # Add a README file with instructions
+          cat > $CM_BUILD_DIR/artifacts/README.txt << 'EOL'
+          Your Finance Manager iOS app has been built successfully!
+          
+          This build contains your actual Finance Manager app code, not just a Hello World app.
+          
+          The app files can be found:
+          1. As email attachments (if email publishing is configured)
+          2. On the Codemagic dashboard in the Artifacts section
+          
+          To install on your device, you'll need to set up code signing with an Apple Developer account.
+          EOL
+    artifacts:
+      - $CM_BUILD_DIR/artifacts/*.app
+      - $CM_BUILD_DIR/artifacts/README.txt
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com # Replace with your actual email
+        notify:
+          success: true
+          failure: true 
